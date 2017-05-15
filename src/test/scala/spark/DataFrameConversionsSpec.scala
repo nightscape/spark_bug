@@ -1,7 +1,5 @@
 package spark
 
-import util.{CaseClass, ReflectionUtil}
-import ReflectionUtil._
 import DataFrameConversions._
 
 import java.time.LocalDate
@@ -13,67 +11,39 @@ import org.apache.spark.sql.types.{StructType, DataTypes}
 import scala.reflect.runtime.universe._
 import scala.collection.mutable.LinkedHashMap
 
-case class Dummy(someId: Long, otherId: Long)
+case class Outermost[+T](
+  obj: T,
+  someValue: Double
+)
 case class Middle[T](
   scope: T
 )
 case class Inner(
   id: Long
 )
-case class Outermost[+T](
-  obj: T,
-  someValue: Double
-)
 class DataFrameConversionsSpec
   extends FunSpec
     with Matchers
 {
-  def getSession(threads:String = "*", applicationName:String = "TestApp"): SparkSession = {
-    SparkSession
-      .builder()
-      .master(s"local[$threads]")
-      .appName(applicationName)
-      .getOrCreate()
-  }
-
-  val spark = getSession()
+  val spark = SparkSession
+    .builder()
+    .master(s"local[2]")
+    .getOrCreate()
   implicit val sparkImplicits = spark.implicits
   implicit val sparkConfig = spark.sparkContext.getConf
   implicit val sqlContext = spark.sqlContext
   import sparkImplicits._
 
-  def flatFieldsAndTypesFor[T : TypeTag]: Seq[(String, Type)] = {
-    val tt = implicitly[TypeTag[T]]
-    flatFieldsAndTypes("", tt.tpe)
-  }
+  val flatSchema = Seq(col("obj.scope.id"), col("someValue"))
 
-  def flatFieldsAndTypes(name: String, tpe: Type): Seq[(String, Type)] = {
-    tpe match {
-      case CaseClass(tpe, fields, _) => fields.flatMap(f => flatFieldsAndTypes(f.name.toString, f.typeSignatureIn(tpe).finalResultType))
-      case _ => Seq(name -> tpe)
-    }
-  }
+  def toFlatDataFrame(ts: Seq[Outermost[Middle[Inner]]]): DataFrame =
+    spark.createDataset[Outermost[Middle[Inner]]](ts).toDF.select(flatSchema: _*)
 
-  def flattenSchema(schema: StructType, prefix: Option[String] = None) : Array[Column] = {
-    schema.fields.flatMap { f =>
-      val colName = prefix.map(_ + ".").getOrElse("") + f.name
-      f.dataType match {
-        case st: StructType => flattenSchema(st, Some(colName))
-        case _ => Array(col(colName))
-      }
-    }
-  }
-
-  def flattenDataFrame(df: DataFrame): DataFrame =
-    df.select(flattenSchema(df.schema): _*)
-
-  def toFlatDataFrame[T <: Product : TypeTag](ts: Seq[T]): DataFrame =
-    flattenDataFrame(spark.createDataset[T](ts).toDF)
-
+  val columnSpec = StructColumn("",Vector(StructColumn("obj",Vector(StructColumn("scope",Vector(PrimitiveColumn("id",typeOf[Long],None))))), PrimitiveColumn("someValue",typeOf[Double],None)))
   def doBusyWork(): Unit = {
     for(i <- 0 to 10) {
       val flatDf = toFlatDataFrame(Seq.empty[Outermost[Middle[Inner]]]).cache
-      val dataset = flatDf.toDS[Outermost[Middle[Inner]]]
+      val dataset = flatDf.toDsFromSpec[Outermost[Middle[Inner]]](columnSpec)
       dataset.collect
     }
   }
@@ -83,14 +53,14 @@ class DataFrameConversionsSpec
   it("failing example without cache") {
     doBusyWork()
     val flatDf = toFlatDataFrame(rows)
-    val dataset = flatDf.toDS[Outermost[Middle[Inner]]]
+    val dataset = flatDf.toDsFromSpec[Outermost[Middle[Inner]]](columnSpec)
     dataset.collect should equal(rows)
   }
 
   it("working example with cache") {
     doBusyWork()
     val flatDf = toFlatDataFrame(rows).cache
-    val dataset = flatDf.toDS[Outermost[Middle[Inner]]]
+    val dataset = flatDf.toDsFromSpec[Outermost[Middle[Inner]]](columnSpec)
     dataset.collect should equal(rows)
   }
 }

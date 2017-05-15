@@ -1,7 +1,5 @@
 package spark
 
-import util.CaseClass
-
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.Column
 import org.apache.spark.sql.types._
@@ -18,19 +16,12 @@ object DataFrameConversions {
   case class PrimitiveColumn(name: String, tpe: Type, defaultValue: Option[Any] = None) extends ColumnSpec
 
   implicit class RichDataFrame(val df: DataFrame) {
-    def toDS[T <: Product : TypeTag](implicit sparkConf: SparkConf, sparkImplicits: SQLImplicits): Dataset[T] = {
+    def toDsFromSpec[T <: Product : TypeTag](structColumn: StructColumn)(implicit sparkConf: SparkConf, sparkImplicits: SQLImplicits): Dataset[T] = {
       import sparkImplicits._
-      val structColumn = sparkColumnDefinition("", implicitly[TypeTag[T]].tpe)
-      val (columnMap, _) = sparkColumnsForStruct(structColumn.asInstanceOf[StructColumn], df.schema, needsStructName = false)
+      val (columnMap, _) = sparkColumnsForStruct(structColumn, df.schema, needsStructName = false)
       val mappedDf = columnMap.foldLeft(df) { case (renamedDf, (newColumnName, columnDefinition)) => renamedDf.withColumn(newColumnName, columnDefinition)}
       val smallDf = mappedDf.select(columnMap.map(t => col(t._1)) : _*)
       smallDf.as[T]
-    }
-
-    private def sparkColumnDefinition(name: String, tpe: Type, defaultValue: Option[Any] = None): ColumnSpec = tpe.finalResultType match {
-      case CaseClass(_, fields, defaultValues) =>
-        StructColumn(name, fields.map(f => sparkColumnDefinition(f.name.toString, f.typeSignatureIn(tpe), defaultValues.get(f))))
-      case _ => PrimitiveColumn(name, tpe.finalResultType, defaultValue)
     }
 
     val dataTypeForClass: Map[Class[_], DataType] = Map(
